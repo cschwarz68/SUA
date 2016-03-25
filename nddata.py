@@ -2,7 +2,7 @@ import glob
 import pandas as pd
 import numpy as np
 
-PATH = r'Raw ND Data'
+PATH = r'Z:\Raw ND Data'
 
 def read_sub(sub):
     ''' Read all the 10 hz files for one subject
@@ -32,8 +32,10 @@ def read_sub(sub):
             continue   
         df = trim_file(df)
         df.run = filename[-8:-4]
-        dflist.append(df)
-    frame = pd.concat(dflist)
+        dflist.append(df)       
+    frame = pd.concat(dflist,axis=0) 
+    print len(frame)
+    frame.to_csv('H:\SUA\SUA\Organized Files\sub_001.csv',index=None) #save all trips to one csv    
     return frame
     
 def reject_file(df):
@@ -48,14 +50,26 @@ def reject_file(df):
   
 def trim_file(df):
     ''' Trim the beginning and end of a file based on speed '''
-    ismoving = df.gpsspeed > 0
+    ismovingG = np.where(df.gpsspeed > 0)[0]
+    ismovingO = np.where(df.obdspeed > 0)[0]
+    if ismovingO != []:
+        if ismovingG[0] > ismovingO[0]:       
+            ismoving = df.obdspeed > 0 
+        else:
+            ismoving = df.gpsspeed > 0
+    else:
+        ismoving = df.gpsspeed > 0
+        
     idx_first = np.where(ismoving)[0][0]
     idx_last = np.where(ismoving)[0][-1]
     try:
         df = df[idx_first:idx_last+1]
     except Exception:
-        df = df[idx_first:idx_last]
-    return df
+        df = df[idx_first:idx_last] 
+    if idx_last-idx_first<=600:
+        df=df[0:0]  
+        print "gps less than 60 sec"        
+    return df   
     
 if __name__ == '__main__':
     import timeit
