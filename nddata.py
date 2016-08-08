@@ -66,6 +66,7 @@ def read_sub(sub):
         numfixed=0
         if trip in open("problem_files.txt").read():
             df, numfixed = replace_time(df,numfixed)
+            print('problem file. numfixed = ' + str(numfixed))
               
         # check that the resulting dataframe is not too short now
         if too_short(df):
@@ -179,7 +180,10 @@ def filt_speed(df):
 
     # filter speed
     b,a = signal.butter(2,0.2)
-    speedfilt = signal.filtfilt(b,a,speed)
+    if len(speed) >= 3*max(len(a),len(b)):
+        speedfilt = signal.filtfilt(b,a,speed)
+    else:
+        speedfilt = speed
     accel = np.diff(speedfilt * KPH2MPS) * FS / G2MPSS
     accel = np.insert(accel,0,0)
     df['speed'] = speedfilt
@@ -255,7 +259,7 @@ def find_reverse(df,indexLeftSP):
 if __name__ == '__main__':
     import cProfile
     import pstats
-    sub = '014'
+    sub = '058'
     cProfile.run('read_sub(sub)', 'nddatastats')
     p = pstats.Stats('nddatastats')
     p.sort_stats('cumulative').print_stats(10)
