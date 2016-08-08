@@ -126,7 +126,7 @@ def missing_gps(df):
     
 def too_short(df):
     if len(df.gpstime)<=600:
-        print "less than 60 sec"
+        print "time is less than 60 sec"
         return True
     return False
 
