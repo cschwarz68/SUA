@@ -85,9 +85,7 @@ def read_sub(sub):
                     
         #for known problem files, replace the wrong time by gpstime
         if trip in open("problem_files.txt").read():
-<<<<<<< HEAD
-            df, numfixed = replace_time(df,numfixed)
-            print('problem file. numfixed = ' + str(numfixed))
+            df = replace_time(df)
               
         # check that the resulting dataframe is not too short now
         if too_short(df):
@@ -95,11 +93,6 @@ def read_sub(sub):
 
         # combine obd and gps speeds and filter
         # also derive the longitudinal acceleration and add to df
-=======
-            df = replace_time(df)
-                     
-        #derive the longitudinal acceleration and add to df
->>>>>>> 2f9520ba9345f57692e80bae5a43d9ce76f382c5
         df = filt_speed(df)
                     
         #revise heading to make it smoother and add to df
@@ -264,7 +257,7 @@ def add_yaw(df):
 
 def decide_start_status(df,trip,acc_diff):
     ''' Get the reverse info based on the starting status and add manuev_init to df'''
-    f = open((os.path.join(os.getenv('SuaProcessed'),"trip_info_beg.txt")))       
+    f = open("trip_info_beg.txt")       
     read = f.readlines()
     for row in read:
         if trip in row:
@@ -291,7 +284,7 @@ def decide_start_status(df,trip,acc_diff):
    
 def add_end_status(df,trip):
     ''' add manuev_end to df based onthe reverse info'''
-    f = open((os.path.join(os.getenv('SuaProcessed'),"trip_info_end.txt")))       
+    f = open("trip_info_end.txt")       
     read = f.readlines()
     for row in read:
         if trip in row:
@@ -420,11 +413,7 @@ def big_reversing_spd(df):
 if __name__ == '__main__':
     import cProfile
     import pstats
-<<<<<<< HEAD
     sub = '058'
-=======
-    sub = '001'
->>>>>>> 2f9520ba9345f57692e80bae5a43d9ce76f382c5
     cProfile.run('read_sub(sub)', 'nddatastats')
     p = pstats.Stats('nddatastats')
     p.sort_stats('cumulative').print_stats(10)
