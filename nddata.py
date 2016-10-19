@@ -2,7 +2,7 @@ import glob
 import os
 import pandas as pd
 import numpy as np
-from scipy import signal
+from scipy import signal, interpolate
 from datetime import timedelta
 import matplotlib.pyplot as plt
 
@@ -215,76 +215,207 @@ def too_short(df):
         print "time is less than 60 sec"
         return True
     return False            
-  
-def trim_file(df):
-    ''' Trim the beginning and end of a file based on speed '''
+
+def key_indices(df):
+    ''' 
+    find some key indices that indicate when good data begins 
+    idx_moving is the index of the first frame the speed is greater than 0.
+    idx_acc is the index of the first frame that Ax is numeric.
+    idx_change is the index of the first frame the speed is consistently changing.
+    There are periods of bad speed where the gpsspeed could be non-zero, but
+    not changing. It is still bad until it starts varying appropriately
+    '''
     ismoving = df.gpsspeed > 0
-    idx_first = np.where(ismoving)[0][0]
+    idx_moving = np.where(ismoving)[0]
+    if idx_moving.size>0:
+        idx_moving = idx_moving[0]
+    else:
+        idx_moving = np.nan
+    
+    has_acc = pd.notnull(df.acc_x)
+    idx_acc = np.where(has_acc)[0]
+    if idx_acc.size>0:
+        idx_acc = idx_acc[0]
+    else:
+        idx_acc = np.nan
+    
+    speed_diff = np.diff(df.gpsspeed)
+    speed_diff = np.insert(speed_diff,0,speed_diff[0])
+    isvalid = np.logical_and(abs(speed_diff)>0.00001,abs(speed_diff)<1.0)
+    change = pd.rolling_sum(isvalid,10)
+    idx_changed = np.where(change>=5)[0]
+    if idx_changed.size>0:
+        idx_change = max(0,idx_changed[0]-5)
+    else:
+        idx_change = np.nan
+    
+    return idx_moving, idx_acc, idx_change
+
+def trim_file(df,idx_moving,idx_acc,idx_change):
+    ''' 
+    Trim the beginning and end of a file.
+    The file should begin when there is an accelerometer signal and
+    end when the speed has dropped to zero
+    '''
+    #df = df[df.gpstime.notnull()]
+    df.loc[0:idx_change,'gpsspeed'] = np.nan
+    df.loc[0:idx_change,'heading'] = np.nan
+    
+    ismoving = df.gpsspeed > 0
     idx_last = np.where(ismoving)[0][-1]
-    try:
-        df = df[idx_first:idx_last+1]
-    except Exception:
-        df = df[idx_first:idx_last]  
+    df = df[idx_acc:idx_last]
+        
     return df   
      
 def replace_time(df):
     ''' Replace time for any rows that have missing or repeated data '''
-    for ind in range(len(df)-1):
-        delta1=df.gpstime.iloc[[ind]] - df.time.iloc[[ind]]
-        delta2=df.time.iloc[[ind]] - df.gpstime.iloc[[ind]]
-        if any(delta1 > timedelta(seconds=1.5)):
-            df.time.iloc[[ind]] = df.gpstime.iloc[[ind]]
-
-        if any(delta2 > timedelta(seconds=1.5)):
-            df.time.iloc[[ind]] = df.gpstime.iloc[[ind]]
+    delta=df.gpstime - df.time
+    isover = delta>timedelta(seconds=1.5)
+    isunder = delta<timedelta(seconds=-1.5)
+    df.loc[isover,'time'] = df.loc[isover,'gpstime']
+    df.loc[isunder,'time'] = df.loc[isunder,'gpstime']
     return df
 
 def filt_speed(df):
-    '''derive the longitudinal acceleration and add to df'''
+    ''' derive the longitudinal acceleration and add to df '''
     speed = df.gpsspeed
     b,a = signal.butter(2,0.2)
-    if len(speed) >= 3*max(len(a),len(b)):
-        speedfilt = signal.filtfilt(b,a,speed)
-    else:
-        speedfilt = speed
+    speedfilt = filter_segments(b,a,speed)
     accel = np.diff(speedfilt * KPH2MPS) * FS / G2MPSS
-    accel = np.insert(accel,0,0)
-    df['speed'] = speed
+    accel = np.insert(accel,0,accel[0])
+    df['speed'] = speedfilt
     df['Ax'] = accel
+    # if there are any nans in the acceleration, have to get rid of them
+    if any(df.acc_x.isnull()):
+        df['i'] = range(len(df))
+        isvalid = df.acc_x.notnull()
+        f = interpolate.interp1d(df.loc[isvalid,'i'],df.loc[isvalid,'acc_x'],
+            fill_value = 'extrapolate')
+        acc_x = f(df.i)
+        df['acc_x1'] = filter_segments(b,a,acc_x)
+    else:
+        df['acc_x1'] = filter_segments(b,a,df.acc_x)
+    if any(df.acc_y.isnull()):
+        isvalid = df.acc_y.notnull()
+        f = interpolate.interp1d(df.loc[isvalid,'i'],df.loc[isvalid,'acc_y'],
+            fill_value = 'extrapolate')
+        acc_y = f(df.i)
+        df['acc_y1'] = filter_segments(b,a,acc_y)
+    else:
+        df['acc_y1'] = filter_segments(b,a,df.acc_y)
     return df     
 
 def add_yaw(df): 
     ''' Add yaw rate based on the adjusted heading '''
     b,a = signal.butter(2,0.2)
     array_heading=np.array(df.heading)
-    countzero=0
-    index_head = 0 
+    # derivative of heading
+    yaw_rate = np.diff(array_heading)
+    yaw_rate = np.insert(yaw_rate,0,yaw_rate[0])
     
-    #find the first heading and backfill to beginning
+    #find the first stable heading and backfill to beginning
     for index in range(len(df)):
-        if array_heading[index] == 0:
-            countzero+=1
+        if sum(abs(yaw_rate[index:index+5]))>10:
+            continue
+        elif ~np.isfinite(sum(abs(yaw_rate[index:index+5]))):
+            continue
         else:
-            break
-    if len(df) > countzero:
-        array_heading[:countzero]=array_heading[countzero] 
-        
-    #locate jumps and modify               
-    if array_heading[0]<180:
-        array_heading[0]+=360    
-    while index_head < len(array_heading)-1:
-        if array_heading[index_head]-array_heading[index_head+1]>350:
-            array_heading[index_head+1]+=360
-        index_head+=1
-    df['new_heading']=pd.Series(array_heading,index=df.index)
+            array_heading[:index]=array_heading[index]
+            break                
+            
+    #locate jumps and modify
+    while any(abs(yaw_rate)>=WRAPYAWANGLE):
+        idx_jump_le, idx_jump_te = find_edges(abs(yaw_rate)>=WRAPYAWANGLE)
+        for idx in idx_jump_le:
+            if yaw_rate[idx]>0:
+                array_heading[idx:] -= 360
+            else:
+                array_heading[idx:] += 360
+        yaw_rate = np.diff(array_heading)
+        yaw_rate = np.insert(yaw_rate,0,yaw_rate[0])
     
+    df['new_heading']=pd.Series(array_heading,index=df.index)
+
+    # recalculate the yaw rate
+    yaw_rate = np.diff(array_heading)
+    yaw_rate = np.insert(yaw_rate,0,yaw_rate[0])
+    yaw_rate_sign = np.sign(yaw_rate)
+    
+    # identify large jumps
+    x = abs(yaw_rate)>20
+    idx_le, idx_te = find_edges(x)
+        
+    if idx_le.size == 0:
+        yaw_rate2 = filter(b,a,yaw_rate)
+    elif idx_le.size == 1:
+        yaw_rate2 = yaw_rate
+        yaw_rate2[:idx_le[0]] = filter(b,a,yaw_rate[:idx_le[0]])
+        yaw_rate2[idx_le[0]+1:] = filter(b,a,yaw_rate[idx_le[0]+1:])
+    else:
+        yaw_rate2 = yaw_rate
+        yaw_rate2[:idx_le[0]] = filter(b,a,yaw_rate[:idx_le[0]])
+        for index in range(len(idx_le)):
+            if index==(len(idx_le)-1):
+                yaw_rate2[idx_le[-1]+1:] = filter(b,a,yaw_rate[idx_le[-1]+1:])
+            else:
+                yaw_rate2[idx_le[index]+1:idx_le[index+1]] = filter(b,a,
+                    yaw_rate[idx_le[index]+1:idx_le[index+1]])
+    
+    df['yaw_rate'] = pd.Series(yaw_rate2,index=df.index)
+        
     #filt new heading and calculate the yaw rate
-    filt_heading = signal.filtfilt(b,a,array_heading) 
-    yaw = np.diff(filt_heading)
-    yaw = np.insert(yaw,0,0)
-    df['yaw_rate']=pd.Series(yaw,index=df.index) 
+    #filt_heading = signal.filtfilt(b,a,array_heading) 
+    #df['yaw_rate']=pd.Series(yaw_rate,index=df.index) 
     return df
 
+def filter_segments(b,a,x):
+    x = np.array(x)
+    idx_valid_le, idx_valid_te = find_edges(~np.isnan(x))
+    for i in range(len(idx_valid_le)):
+        x[idx_valid_le[i]:idx_valid_te[i]] = filter(b,a,x[idx_valid_le[i]:idx_valid_te[i]])
+    return x
+    
+def filter(b,a,x):
+    if len(x) <= 3*max(len(a),len(b)):
+        y = x
+        return y
+    
+    y = signal.filtfilt(b,a,x)
+    return y
+
+def find_edges(x):
+    ''' find the indices of all the leading and trailing edges of a bool
+        array '''
+    shift = x
+    mask = np.ones(len(shift), dtype=bool)
+    mask[-1] = 0
+    shift = shift[mask]
+    shift = np.insert(shift,0,shift[0])
+    
+    le = np.logical_and(x==1,shift==0)
+    te = np.logical_and(x==0,shift==1)
+    idx_le = np.where(le)[0]
+    idx_te = np.where(te)[0]
+    
+    if np.logical_and(idx_le.size==0,idx_te.size==0):
+        if any(x):
+            idx_le = np.array([1])
+            idx_te = np.array([len(x)-1])
+        else:
+            idx_le = np.array([])
+            idx_te = np.array([])
+    elif np.logical_and(idx_le.size==0,idx_te.size>0):
+        idx_le = np.array([1])
+    elif np.logical_and(idx_le.size>0,idx_te.size==0):
+        idx_te = np.array([len(x)-1])
+    else:
+        if idx_le[0] > idx_te[0]:
+            idx_le = np.insert(idx_le,0,0)
+        if idx_le[-1] > idx_te[-1]:
+            idx_te = np.insert(idx_te,len(idx_te),len(x)-1)
+    return idx_le, idx_te
+    
+    
 def decide_start_status(df,trip,acc_diff):
     ''' Get the reverse info based on the starting status and add manuev_init to df'''
     f = open("trip_info_beg.txt")       
