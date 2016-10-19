@@ -50,55 +50,44 @@ def read_sub(sub,single_trip=0):
         except Exception:
             print 'read_csv failed on: ' + filename
             continue
+
+        # allow for a single trip number to be passed in as an optional arg
+        if single_trip > 0 and trip != single_trip:
+            continue
                 
+        # for known files with unfixable problems, skip them
+        if trip in open("skip_files.csv").read():
+            continue
+                                        
         # check to see that there are valid gps values and the vehicle is moving   
         if missing_gps(df):
             continue    
             
         # find the number of rows that acc_x has values before gpsspeed starts
-        if any(pd.notnull(df.acc_x)):
-            hasacc,hasacc1 = df.acc_x > 0,df.acc_x<0
-            if len(np.where(hasacc1)[0]) > 0:
-                np.where(hasacc1)[0][0] 
-                idx_acc,idx_acc1 = np.where(hasacc)[0][0],np.where(hasacc1)[0][0]
-                idx_first_acc = min(idx_acc,idx_acc1) 
-            else:
-                idx_first_acc = np.where(hasacc)[0][0]
-            
-            ismoving = df.gpsspeed > 0
-            idx_moving = np.where(ismoving)[0][0]
-            acc_diff = idx_moving - idx_first_acc   
-        else:
-            acc_diff = 0
+        idx_moving, idx_acc, idx_change = key_indices(df)
+        if (idx_moving is np.nan) or (idx_acc is np.nan) or (idx_change is np.nan):
+            continue
+        acc_diff = idx_change - idx_acc
                                                                                     
         # trim size of file by getting rid of empty rows, duplicates, and null times
-        df = trim_file(df)
-        df=df.drop_duplicates(subset=['gpstime','latitude','longitude',
-            'gpsspeed', 'heading', 'pdop', 'hdop', 'vdop','fix_type', 'num_sats', 
-            'acc_x', 'acc_y', 'acc_z','throttle', 'rpm'],
+        df = trim_file(df,idx_moving,idx_acc,idx_change)
+        df=df.drop_duplicates(subset=['gpstime','latitude','longitude','gpsspeed'],
             keep='first')
-        df = df[df.gpstime.notnull()]
-        
-        #Staff driving, which should be deleted
-        if (trip =='2968' or trip =='7804'):
-            df = df[0:0]
-            
-        #check that the resulting dataframe is not too short now
-        if too_short(df):
-            continue
                     
-        #for known problem files, replace the wrong time by gpstime
-        if trip in open("problem_files.txt").read():
-            df = replace_time(df)
-              
         # check that the resulting dataframe is not too short now
         if too_short(df):
             continue
 
+        #df = df.set_index(df.gpstime)
+                    
+        # for known problem files, replace the wrong time by gpstime
+        if trip in open("problem_files.txt").read():
+            df = replace_time(df)
+   
         # combine obd and gps speeds and filter
         # also derive the longitudinal acceleration and add to df
         df = filt_speed(df)
-                    
+        
         # revise heading to make it smoother and add to df
         # also derive the yaw rate and add to df
         df = add_yaw(df)
@@ -221,6 +210,7 @@ def missing_gps(df):
     return False
     
 def too_short(df):
+    ''' Reject a file if it doesn't cover enough time '''
     if len(df.gpstime)<=600:
         print "time is less than 60 sec"
         return True
