@@ -4,14 +4,18 @@ import pandas as pd
 import numpy as np
 from scipy import signal
 from datetime import timedelta
+import matplotlib.pyplot as plt
 
 KPH2MPS = 1/3.6
 G2MPSS = 9.8
 FS = 10
 MINSATELLITES = 4
+MAKEPLOTS = True
+WRITEFILE = False
+WRAPYAWANGLE = 290
 not_match_number = 0
 
-def read_sub(sub):
+def read_sub(sub,single_trip=0):
     ''' Read all the 10 hz files for one subject
     
     Arguments:
@@ -51,7 +55,7 @@ def read_sub(sub):
         if missing_gps(df):
             continue    
             
-        #find the difference between acc rows and speed rows
+        # find the number of rows that acc_x has values before gpsspeed starts
         if any(pd.notnull(df.acc_x)):
             hasacc,hasacc1 = df.acc_x > 0,df.acc_x<0
             if len(np.where(hasacc1)[0]) > 0:
@@ -67,7 +71,7 @@ def read_sub(sub):
         else:
             acc_diff = 0
                                                                                     
-        #trim size of file by getting rid of empty rows, duplicates, and null times
+        # trim size of file by getting rid of empty rows, duplicates, and null times
         df = trim_file(df)
         df=df.drop_duplicates(subset=['gpstime','latitude','longitude',
             'gpsspeed', 'heading', 'pdop', 'hdop', 'vdop','fix_type', 'num_sats', 
@@ -95,38 +99,73 @@ def read_sub(sub):
         # also derive the longitudinal acceleration and add to df
         df = filt_speed(df)
                     
-        #revise heading to make it smoother and add to df
-        #also derive the yaw rate and add to df
+        # revise heading to make it smoother and add to df
+        # also derive the yaw rate and add to df
         df = add_yaw(df)
-                    
+
+        # diagnostic plots 
+        if MAKEPLOTS:    
+            F = plt.figure()
+            plt.subplot(321)
+            plt.plot(df.gpstime)
+            plt.title(trip)
+            plt.subplot(322)
+            plt.plot(df.Ax)
+            plt.hold
+            plt.plot(-df.acc_x1)
+            plt.ylim(-0.3,0.3)
+            plt.ylabel('Ax (G)')
+            plt.subplot(323)
+            plt.plot(df.gpsspeed)
+            plt.hold
+            plt.plot(df.speed)
+            a = np.array(plt.axis())
+            a[0] = df.index[0]
+            plt.axis(a)
+            plt.ylabel('speed (kph)')
+            plt.subplot(324)
+            plt.plot(df.yaw_rate)
+            plt.ylim(-4,4)
+            plt.ylabel('deg/s')
+            plt.subplot(325)
+            plt.plot(df.new_heading)
+            plt.ylabel('yaw (deg)')       
+            plt.subplot(326)
+            plt.plot(df.acc_y1)
+            plt.ylim(-0.3,0.3)
+            plt.ylabel('Ay (G)')
+            F.set_size_inches(16, 6)
+            #plt.pause(1)
+            plt.savefig(sub + '_' + trip + '.png')
+                                           
         # pull the trip number from the file name
         df['trip']=df['subject_id'].map(lambda x:trip)  
         
-        #delete junk rows in the begining of the trips    
+        # delete junk rows in the begining of the trips    
         if trip == '2247':
             df = df[7:]
         elif trip == '2462':
             df = df[13:]
                     
-        #add reverse variable to df
-        #also add manuever status to df
+        # add reverse variable to df
+        # also add manuever status to df
         df = decide_start_status(df, trip, acc_diff)
         df = add_end_status(df, trip)
             
-        #reformat the column orders               
+        # reformat the column orders               
         df=df.reindex(columns=['subject_id', 'time', 'gpstime', 'latitude',
             'longitude', 'heading', 'new_heading', 'yaw_rate',
             'pdop', 'hdop', 'vdop', 'fix_type', 'num_sats',
             'acc_x', 'acc_y', 'acc_z', 'throttle', 'rpm', 'speed',
             'Ax', 'trip', 'reverse?', 'manuev_init', 'manuev_end']) 
     
-        #if the begining speed is too big,then df misses starting gps
+        # if the begining speed is too big,then df misses starting gps
         df = big_starting_spd(df, sub, trip)   
          
-        #check if the speed of reversing period is too high  
+        # check if the speed of reversing period is too high  
         df = big_reversing_spd(df)
         
-        #if the reversing period is too long, then change it to forward                       
+        # if the reversing period is too long, then change it to forward                       
         L1,L2 = create_list(df,l1=[],l2=[],count=0,List1=[],List2=[]) 
         if trip in open("change_rvs2fwd_after_videos.txt").read():                   
             for index in range(len(L1)):
@@ -137,13 +176,13 @@ def read_sub(sub):
             new_rvs = sum(L1,[])
             df['reverse?'] = new_rvs   
             
-        #revise the manuev_init status    
+        # revise the manuev_init status    
         if np.array(df['reverse?'])[0] == 0:          
             df['manuev_init'] = 'D'
         else:
             df['manuev_init'] = 'R'
         
-        #check if the end status match        
+        # check if the end status match        
         check = np.array(df['reverse?'])[-1]
         trip_end = np.array(df.manuev_end)[0]
         if (check ==0 and trip_end == 'R') or (check == 1 and trip_end == 'D'):
@@ -157,17 +196,18 @@ def read_sub(sub):
                             
         dflist.append(df)             
                     
-    #combine list of frames into one dataframe
+    # combine list of frames into one dataframe
     frame = pd.concat(dflist,axis=0)
      
-    #export dataframe to csv file
+    # export dataframe to csv file
     frame.to_csv(os.path.join(os.getenv('SuaProcessed'), 
         'sub_' + sub + '.csv'), index=None)
                                                       
-    #save row count and number of row-fixed to txt file  
-    f = open((os.path.join(os.getenv('SuaProcessed'), "countRows.txt")),'a') 
-    f.write('\nsub_' + sub + ', ' + str(len(frame)))
-    f.close()
+    # save row count and number of row-fixed to txt file  
+    if WRITEFILE:
+        f = open((os.path.join(os.getenv('SuaProcessed'), "countRows.txt")),'a') 
+        f.write('\nsub_' + sub + ', ' + str(len(frame)))
+        f.close()
     return frame 
 
 def missing_gps(df):
@@ -413,8 +453,9 @@ def big_reversing_spd(df):
 if __name__ == '__main__':
     import cProfile
     import pstats
-    sub = '058'
-    cProfile.run('read_sub(sub)', 'nddatastats')
+    sub = '001'
+    trip = '2166'
+    cProfile.run('read_sub(sub,trip)', 'nddatastats')
     p = pstats.Stats('nddatastats')
     p.sort_stats('cumulative').print_stats(10)
     
