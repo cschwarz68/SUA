@@ -11,7 +11,7 @@ G2MPSS = 9.8
 FS = 10
 MINSATELLITES = 4
 MAKEPLOTS = True
-WRITEFILE = False
+WRITEFILE = True
 WRAPYAWANGLE = 290
 not_match_number = 0
 
@@ -68,11 +68,12 @@ def read_sub(sub,single_trip=0):
         if (idx_moving is np.nan) or (idx_acc is np.nan) or (idx_change is np.nan):
             continue
         acc_diff = idx_change - idx_acc
-                                                                                    
+                                                                                            
         # trim size of file by getting rid of empty rows, duplicates, and null times
         df = trim_file(df,idx_moving,idx_acc,idx_change)
-        df=df.drop_duplicates(subset=['gpstime','latitude','longitude','gpsspeed'],
+        df = df.drop_duplicates(subset=['gpstime','latitude','longitude','gpsspeed'],
             keep='first')
+        df = df[df.gpstime.notnull()]
                     
         # check that the resulting dataframe is not too short now
         if too_short(df):
@@ -90,8 +91,10 @@ def read_sub(sub,single_trip=0):
         
         # revise heading to make it smoother and add to df
         # also derive the yaw rate and add to df
-        df = add_yaw(df)
+        df = add_yawrate(df)
 
+        df = df.reset_index(drop=True)
+        
         # diagnostic plots 
         if MAKEPLOTS:    
             F = plt.figure()
@@ -125,7 +128,7 @@ def read_sub(sub,single_trip=0):
             plt.ylabel('Ay (G)')
             F.set_size_inches(16, 6)
             #plt.pause(1)
-            plt.savefig(sub + '_' + trip + '.png')
+            plt.savefig(os.path.join('plots',sub + '_' + trip + '.png'))
                                            
         # pull the trip number from the file name
         df['trip']=df['subject_id'].map(lambda x:trip)  
@@ -148,7 +151,7 @@ def read_sub(sub,single_trip=0):
             'acc_x', 'acc_y', 'acc_z', 'throttle', 'rpm', 'speed',
             'Ax', 'trip', 'reverse?', 'manuev_init', 'manuev_end']) 
     
-        # if the begining speed is too big,then df misses starting gps
+        # if the begining speed is too big,then we think the df misses starting gps
         df = big_starting_spd(df, sub, trip)   
          
         # check if the speed of reversing period is too high  
@@ -187,16 +190,17 @@ def read_sub(sub,single_trip=0):
                     
     # combine list of frames into one dataframe
     frame = pd.concat(dflist,axis=0)
-     
-    # export dataframe to csv file
-    frame.to_csv(os.path.join(os.getenv('SuaProcessed'), 
-        'sub_' + sub + '.csv'), index=None)
-                                                      
+                                              
     # save row count and number of row-fixed to txt file  
     if WRITEFILE:
+        # export dataframe to csv file
+        frame.to_csv(os.path.join(os.getenv('SuaProcessed'), 
+        'sub_' + sub + '.csv'), index=None)
+        # export countRows data to file
         f = open((os.path.join(os.getenv('SuaProcessed'), "countRows.txt")),'a') 
         f.write('\nsub_' + sub + ', ' + str(len(frame)))
         f.close()
+        
     return frame 
 
 def missing_gps(df):
@@ -254,7 +258,7 @@ def key_indices(df):
 def trim_file(df,idx_moving,idx_acc,idx_change):
     ''' 
     Trim the beginning and end of a file.
-    The file should begin when there is an accelerometer signal and
+    The file should begin when there is gps speed signal and
     end when the speed has dropped to zero
     '''
     #df = df[df.gpstime.notnull()]
@@ -263,7 +267,7 @@ def trim_file(df,idx_moving,idx_acc,idx_change):
     
     ismoving = df.gpsspeed > 0
     idx_last = np.where(ismoving)[0][-1]
-    df = df[idx_acc:idx_last]
+    df = df[max(idx_acc,idx_change):idx_last]
         
     return df   
      
@@ -278,15 +282,34 @@ def replace_time(df):
 
 def filt_speed(df):
     ''' derive the longitudinal acceleration and add to df '''
-    speed = df.gpsspeed
+    speed = np.array(df.gpsspeed)
+    # interpolate across any missing values
+    i_samples = np.array(range(len(speed)))
+    isvalid = pd.notnull(speed)
+    f = interpolate.interp1d(i_samples[isvalid],speed[isvalid],
+        fill_value = 'extrapolate')
+    speed = f(i_samples)
+    # lower limit the speed at 0
+    speed[speed<0.0] = 0.0
+    # smooth the speed
     b,a = signal.butter(2,0.2)
     speedfilt = filter_segments(b,a,speed)
+    df['speed'] = speedfilt
+    # estimate the acceleration with differentiation
     accel = np.diff(speedfilt * KPH2MPS) * FS / G2MPSS
     accel = np.insert(accel,0,accel[0])
-    df['speed'] = speedfilt
+    isjump = abs(accel)>0.7
+    accel[isjump] = np.nan
+    i_samples = np.array(range(len(accel)))
+    isvalid = pd.notnull(accel)
+    f = interpolate.interp1d(i_samples[isvalid],accel[isvalid],
+        fill_value = 'extrapolate')
+    accel = f(i_samples)
     df['Ax'] = accel
     # if there are any nans in the acceleration, have to get rid of them
-    if any(df.acc_x.isnull()):
+    if all(df.acc_x.isnull()):
+        df['acc_x1'] = df.acc_x
+    elif any(df.acc_x.isnull()):
         df['i'] = range(len(df))
         isvalid = df.acc_x.notnull()
         f = interpolate.interp1d(df.loc[isvalid,'i'],df.loc[isvalid,'acc_x'],
@@ -295,7 +318,10 @@ def filt_speed(df):
         df['acc_x1'] = filter_segments(b,a,acc_x)
     else:
         df['acc_x1'] = filter_segments(b,a,df.acc_x)
-    if any(df.acc_y.isnull()):
+    if all(df.acc_y.isnull()):
+        df['acc_y1'] = df.acc_y
+    elif any(df.acc_y.isnull()):
+        df['i'] = range(len(df))
         isvalid = df.acc_y.notnull()
         f = interpolate.interp1d(df.loc[isvalid,'i'],df.loc[isvalid,'acc_y'],
             fill_value = 'extrapolate')
@@ -305,9 +331,8 @@ def filt_speed(df):
         df['acc_y1'] = filter_segments(b,a,df.acc_y)
     return df     
 
-def add_yaw(df): 
+def add_yawrate(df): 
     ''' Add yaw rate based on the adjusted heading '''
-    b,a = signal.butter(2,0.2)
     array_heading=np.array(df.heading)
     # derivative of heading
     yaw_rate = np.diff(array_heading)
@@ -342,30 +367,17 @@ def add_yaw(df):
     yaw_rate_sign = np.sign(yaw_rate)
     
     # identify large jumps
-    x = abs(yaw_rate)>20
-    idx_le, idx_te = find_edges(x)
-        
-    if idx_le.size == 0:
-        yaw_rate2 = filter(b,a,yaw_rate)
-    elif idx_le.size == 1:
-        yaw_rate2 = yaw_rate
-        yaw_rate2[:idx_le[0]] = filter(b,a,yaw_rate[:idx_le[0]])
-        yaw_rate2[idx_le[0]+1:] = filter(b,a,yaw_rate[idx_le[0]+1:])
-    else:
-        yaw_rate2 = yaw_rate
-        yaw_rate2[:idx_le[0]] = filter(b,a,yaw_rate[:idx_le[0]])
-        for index in range(len(idx_le)):
-            if index==(len(idx_le)-1):
-                yaw_rate2[idx_le[-1]+1:] = filter(b,a,yaw_rate[idx_le[-1]+1:])
-            else:
-                yaw_rate2[idx_le[index]+1:idx_le[index+1]] = filter(b,a,
-                    yaw_rate[idx_le[index]+1:idx_le[index+1]])
-    
+    isjump = abs(yaw_rate)>10
+    yaw_rate[isjump] = np.nan
+    i_samples = np.array(range(len(yaw_rate)))
+    isvalid = pd.notnull(yaw_rate)
+    f = interpolate.interp1d(i_samples[isvalid],yaw_rate[isvalid],
+        fill_value = 'extrapolate')
+    yaw_rate = f(i_samples)
+    b,a = signal.butter(2,0.2)
+    yaw_rate2 = filter(b,a,yaw_rate)*FS
     df['yaw_rate'] = pd.Series(yaw_rate2,index=df.index)
         
-    #filt new heading and calculate the yaw rate
-    #filt_heading = signal.filtfilt(b,a,array_heading) 
-    #df['yaw_rate']=pd.Series(yaw_rate,index=df.index) 
     return df
 
 def filter_segments(b,a,x):
@@ -575,8 +587,9 @@ if __name__ == '__main__':
     import cProfile
     import pstats
     sub = '001'
-    trip = '2166'
-    cProfile.run('read_sub(sub,trip)', 'nddatastats')
+#    trip = '3133'
+#    cProfile.run('read_sub(sub,trip)', 'nddatastats')
+    cProfile.run('read_sub(sub)', 'nddatastats')
     p = pstats.Stats('nddatastats')
     p.sort_stats('cumulative').print_stats(10)
     
