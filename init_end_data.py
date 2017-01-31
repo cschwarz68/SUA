@@ -3,8 +3,8 @@ import numpy as np
 
 '''find the initial and end df of every trip, which speed is smaller than 15'''
 
-sub = '007'
-path = "H:\SUA\SUA\\Organized Files\\sub_"+sub+".csv"
+sub = '058'
+path = "H:\SUA_file\SUA_files\\Organized Files\\sub_"+sub+".csv"
 print path
 
 alldf = pd.read_csv(path)
@@ -22,7 +22,7 @@ for i in range(len(df_list)):
             df_list_sorted[j] = df_list[i]
             
 #find maneuver information            
-df_manu = pd.read_csv('N:\KPMG_ResearchStudy3\Raw_ND_Data\Driver_Event Query_Verififed_NADS.csv', 
+df_manu = pd.read_csv('N:\Raw_ND_Data\Driver_Event Query_Verififed_NADS.csv', 
                 usecols=['Run ID','Type of manuever','Maneuver type end'])
 manu_ID = np.array(df_manu['Run ID'])
 print manu_ID
@@ -74,8 +74,11 @@ for df in df_list_sorted:
             
         if (str(trip_n) == manu1) or (str(trip_n) == manu2):
             init_status = init_manu[index]
-            df_init['manu_status'] = init_status
+            df_init['maneuver'] = init_status
             break
+            
+    if 'maneuver' not in df_init.columns:
+        df_init['maneuver'] = None
               
     all_df.append(df_init)
     
@@ -112,8 +115,11 @@ for df in df_list_sorted:
             
         if (str(trip_n) == manu1) or (str(trip_n) == manu2):
             end_status = end_manu[index]
-            df_end['manu_status'] = end_status
+            df_end['maneuver'] = end_status
             break
+            
+    if 'maneuver' not in df_end.columns:
+        df_end['maneuver'] = None          
     
     
     all_df.append(df_end)
@@ -121,9 +127,15 @@ for df in df_list_sorted:
         
 #combine list of frames into one dataframe
 frame = pd.concat(all_df,axis=0)
+
+#reset the order of columns
+frame = frame[['subject_id','time','gpstime','latitude','longitude','heading',
+                'new_heading','yaw_rate','pdop','hdop','vdop','fix_type',
+                'num_sats','acc_x','acc_y','acc_z','throttle','rpm','speed',
+                'Ax','trip','reverse?','manuev_init','manuev_end','init?','maneuver']]
      
 #export dataframe to csv file
-frame.to_csv('H:\SUA\SUA\init_end_files\sub_'+sub+'_init_end.csv', index=None)
+frame.to_csv('H:\SUA_file\SUA_files\init_end_files\sub_'+sub+'_init_end.csv', index=None)
     
     
     
